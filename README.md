@@ -32,7 +32,7 @@ This project sets up IsaacLab and IsaacSim on Modal's serverless GPU infrastruct
 4. **Train a robot with wandb logging**:
    ```bash
    # Train Anymal-D on rough terrain with wandb
-   modal run isaaclab_modal.py::train_ant \
+   modal run isaaclab_modal.py::train_robot \
      --task Isaac-Velocity-Rough-Anymal-D-v0 \
      --num-steps 1000 \
      --use-wandb \
@@ -40,7 +40,7 @@ This project sets up IsaacLab and IsaacSim on Modal's serverless GPU infrastruct
      --wandb-key your_wandb_key_here
    
    # Or train the ant (original task)
-   modal run isaaclab_modal.py::train_ant \
+   modal run isaaclab_modal.py::train_robot \
      --task Isaac-Ant-v0 \
      --num-steps 1000
    ```
@@ -50,7 +50,7 @@ This project sets up IsaacLab and IsaacSim on Modal's serverless GPU infrastruct
 - `modal run isaaclab_modal.py::main` - Run the test suite and verify installation
 - `modal run isaaclab_modal.py::check_installation` - Check if everything is installed correctly
 - `modal run isaaclab_modal.py::run_isaaclab_test` - Run a basic IsaacLab test
-- `modal run isaaclab_modal.py::train_ant` - Train a robot using RL with wandb support (default: Anymal-D)
+- `modal run isaaclab_modal.py::train_robot` - Train a robot using RL with wandb support (default: Anymal-D)
 
 ## Setup Details
 
@@ -99,7 +99,7 @@ The setup includes a **custom training script** (`train_with_wandb.py`) with bui
 
 2. **Run training with wandb**:
    ```bash
-   modal run isaaclab_modal.py::train_ant \
+   modal run isaaclab_modal.py::train_robot \
      --task Isaac-Velocity-Rough-Anymal-D-v0 \
      --num-steps 1000 \
      --use-wandb \
