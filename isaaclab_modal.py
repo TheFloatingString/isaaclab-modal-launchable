@@ -275,8 +275,7 @@ image = (
         # Logging and experiment tracking
         "wandb",
         "tensorboard",
-        # RL libraries
-        "stable-baselines3",
+        "stable-baselines3"
     )
     .run_function(setup_image, gpu="T4", timeout=3600)  # 1 hour timeout for build
     .add_local_file("train_with_wandb.py", remote_path="/root/train_with_wandb.py")
@@ -404,18 +403,22 @@ print('  Note: Full simulation requires running IsaacSim (see train_ant function
 )
 def train_ant(
     task: str = "Isaac-Velocity-Rough-Anymal-D-v0",
-    num_steps: int = 1000,
+    num_steps: int = None,
+    total_timesteps: int = None,
     use_wandb: bool = True,
     wandb_project: str = "isaaclab-training",
     wandb_entity: str = None,
     wandb_run_name: str = None,
     wandb_key: str = None,
+    record_video: bool = False,
+    video_interval_iters: int = 10,
 ):
     """Train a robot using RL with wandb logging.
 
     Args:
         task: Task name (default: Isaac-Velocity-Rough-Anymal-D-v0)
-        num_steps: Number of training iterations
+        num_steps: Deprecated - use total_timesteps instead
+        total_timesteps: Total number of training timesteps
         use_wandb: Enable wandb logging
         wandb_project: Wandb project name
         wandb_entity: Wandb entity/username (optional)
@@ -431,8 +434,11 @@ def train_ant(
     # Use custom training script with wandb support
     train_script = "/root/train_with_wandb.py"
 
+    # Handle backward compatibility: num_steps or total_timesteps
+    timesteps = total_timesteps or num_steps or 1000
+
     print(f"Training {task}...")
-    print(f"Training steps: {num_steps}")
+    print(f"Training timesteps: {timesteps}")
     print(f"Wandb enabled: {use_wandb}")
     if use_wandb:
         print(f"Wandb project: {wandb_project}")
@@ -452,8 +458,10 @@ def train_ant(
 
     # Build training command
     train_cmd = (
-        f"python {train_script} --task={task} --headless --max_iterations={num_steps}"
+        f"python {train_script} --task={task} --headless --total_timesteps={timesteps}"
     )
+    if record_video:
+        train_cmd += f" --video --video_interval_iters={video_interval_iters} --enable_cameras"
 
     # Add wandb arguments if enabled
     if use_wandb:
