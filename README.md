@@ -1,5 +1,7 @@
 # IsaacLab on Modal
 
+![img](./static/wandb.png)
+
 Running IsaacLab 2.0.2 with IsaacSim 4.5.0 on serverless GPUs using Modal and micromamba.
 
 ## Overview
