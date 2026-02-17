@@ -398,33 +398,23 @@ print('  Note: Full simulation requires running IsaacSim (see train_robot functi
 
 @app.function(
     image=image,
-    gpu="T4",
+    gpu="A100",
     timeout=3600,
 )
-def train_robot(
+def _train_robot_job(
     task: str = "Isaac-Velocity-Rough-Anymal-D-v0",
     num_steps: int = None,
     total_timesteps: int = None,
+    num_envs: int = 4096,
     use_wandb: bool = True,
     wandb_project: str = "isaaclab-training",
     wandb_entity: str = None,
     wandb_run_name: str = None,
     wandb_key: str = None,
     record_video: bool = False,
-    video_interval_iters: int = 10,
+    video_interval_iters: int = 50,
 ):
-    """Train a robot using RL with wandb logging.
-
-    Args:
-        task: Task name (default: Isaac-Velocity-Rough-Anymal-D-v0)
-        num_steps: Deprecated - use total_timesteps instead
-        total_timesteps: Total number of training timesteps
-        use_wandb: Enable wandb logging
-        wandb_project: Wandb project name
-        wandb_entity: Wandb entity/username (optional)
-        wandb_run_name: Wandb run name (optional)
-        wandb_key: Wandb API key (optional)
-    """
+    """Remote training job — dispatched by train_robot local entrypoint."""
     import subprocess
     import os
 
@@ -458,10 +448,10 @@ def train_robot(
 
     # Build training command
     train_cmd = (
-        f"python {train_script} --task={task} --headless --total_timesteps={timesteps}"
+        f"python {train_script} --task={task} --headless --total_timesteps={timesteps} --num_envs={num_envs}"
     )
     if record_video:
-        train_cmd += f" --video --video_interval_iters={video_interval_iters} --enable_cameras"
+        train_cmd += f" --video --video_interval_iters={video_interval_iters}"
 
     # Add wandb arguments if enabled
     if use_wandb:
@@ -496,6 +486,36 @@ def train_robot(
     print("Return code:", result.returncode)
 
     return result.returncode == 0
+
+
+@app.local_entrypoint()
+def train_robot(
+    task: str = "Isaac-Velocity-Rough-Anymal-D-v0",
+    total_timesteps: int = None,
+    num_steps: int = None,
+    num_envs: int = 4096,
+    use_wandb: bool = True,
+    wandb_project: str = "isaaclab-training",
+    wandb_entity: str = None,
+    wandb_run_name: str = None,
+    wandb_key: str = None,
+    record_video: bool = False,
+    video_interval_iters: int = 50,
+):
+    """Train a robot on Modal. GPU is configured in the @app.function decorator on _train_robot_job."""
+    _train_robot_job.remote(
+        task=task,
+        num_steps=num_steps,
+        total_timesteps=total_timesteps,
+        num_envs=num_envs,
+        use_wandb=use_wandb,
+        wandb_project=wandb_project,
+        wandb_entity=wandb_entity,
+        wandb_run_name=wandb_run_name,
+        wandb_key=wandb_key,
+        record_video=record_video,
+        video_interval_iters=video_interval_iters,
+    )
 
 
 @app.function(

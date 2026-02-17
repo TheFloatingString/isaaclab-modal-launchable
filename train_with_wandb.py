@@ -1,6 +1,7 @@
 """Custom training script with wandb logging using RSL RL PPO."""
 
 import argparse
+import logging
 import os
 from datetime import datetime
 
@@ -28,7 +29,7 @@ parser.add_argument(
 parser.add_argument(
     "--video_interval_iters",
     type=int,
-    default=10,
+    default=50,
     help="Upload a video to wandb every N training iterations.",
 )
 parser.add_argument(
@@ -63,9 +64,8 @@ parser.add_argument("--wandb_run_name", type=str, default=None, help="Wandb run 
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
-# always enable cameras to record video
-if args_cli.video:
-    args_cli.enable_cameras = True
+# NOTE: enable_cameras causes IsaacSim to crash in headless Modal environments
+# Video recording uses gym.wrappers.RecordVideo which doesn't require the camera subsystem
 
 # launch omniverse app
 app_launcher = AppLauncher(args_cli)
@@ -75,6 +75,21 @@ simulation_app = app_launcher.app
 
 import gymnasium as gym
 import torch
+
+from rich.console import Console
+from rich.logging import RichHandler
+from rich.panel import Panel
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn
+from rich.table import Table
+
+# Set up rich-based logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(message)s",
+    handlers=[RichHandler(rich_tracebacks=True, show_path=False)],
+)
+log = logging.getLogger("train")
+console = Console()
 
 from isaaclab.envs import (
     DirectMARLEnv,
@@ -134,17 +149,25 @@ class WandbLogger:
             wandb.finish()
 
 
-def find_and_upload_latest_video(video_dir, wandb_run, step, already_uploaded):
-    """Find the most recent .mp4 in video_dir and upload it to wandb if not already uploaded."""
+def _upload_video_bg(path, step):
+    """Upload a single video to wandb in a background thread."""
+    try:
+        wandb.log({"rollout/video": wandb.Video(path, fps=30, format="mp4")}, step=step)
+        log.info(f"Video uploaded: {os.path.basename(path)}")
+    except Exception as e:
+        log.warning(f"Video upload failed: {e}")
+
+
+def find_and_upload_latest_video(video_dir, step, already_uploaded):
+    """Find new .mp4 files and kick off background uploads for each."""
     import glob
+    import threading
     mp4s = sorted(glob.glob(os.path.join(video_dir, "**", "*.mp4"), recursive=True))
     new_videos = [p for p in mp4s if p not in already_uploaded]
-    if not new_videos:
-        return already_uploaded
-    latest = new_videos[-1]
-    print(f"[INFO] Uploading video to wandb: {latest}")
-    wandb.log({"rollout/video": wandb.Video(latest, fps=30, format="mp4")}, step=step)
-    already_uploaded.add(latest)
+    for path in new_videos:
+        log.info(f"Queueing video upload: {os.path.basename(path)}")
+        threading.Thread(target=_upload_video_bg, args=(path, step), daemon=True).start()
+        already_uploaded.add(path)
     return already_uploaded
 
 
@@ -168,6 +191,9 @@ class RslRlVecEnvWrapper:
         # Reset the environment to get initial observations
         obs, extras = env.reset()
         self.obs_buf = obs
+        # Compute num_obs from first observation
+        obs_tensor = self._obs_to_tensor(obs) if obs is not None else None
+        self.num_obs = obs_tensor.shape[1] if obs_tensor is not None else 0
 
     def _obs_to_tensor(self, obs):
         """Convert dict or array observations to a flat tensor."""
@@ -257,15 +283,23 @@ def main():
     """Train with RSL RL PPO agent and wandb logging."""
 
     if not RSL_RL_AVAILABLE:
-        print("[ERROR] rsl_rl is required for PPO training")
+        log.error("rsl_rl is required for PPO training")
         return
 
-    # Parse task configuration manually
     if args_cli.task is None:
-        print("[ERROR] No task specified. Use --task=<task_name>")
+        log.error("No task specified. Use --task=<task_name>")
         return
 
-    print(f"[INFO] Loading task: {args_cli.task}")
+    console.print(Panel.fit(
+        f"[bold cyan]RSL RL PPO Training[/bold cyan]\n"
+        f"Task: [yellow]{args_cli.task}[/yellow]\n"
+        f"Envs: [yellow]{args_cli.num_envs}[/yellow]  |  "
+        f"Timesteps: [yellow]{args_cli.total_timesteps:,}[/yellow]  |  "
+        f"Seed: [yellow]{args_cli.seed}[/yellow]",
+        border_style="cyan",
+    ))
+
+    log.info(f"Loading task: {args_cli.task}")
 
     # Parse task config using IsaacLab's utility
     try:
@@ -274,9 +308,7 @@ def main():
         # Load agent config from registry
         agent_cfg = load_cfg_from_registry(args_cli.task, "rsl_rl_cfg_entry_point")
     except Exception as e:
-        print(f"[ERROR] Failed to parse task config: {e}")
-        print("[INFO] Trying alternative method...")
-        # Fallback: try to import directly
+        log.warning(f"Registry load failed: {e} — trying direct import fallback")
         try:
             from isaaclab_tasks.manager_based.locomotion.velocity.config.anymal_d.flat_env_cfg import (
                 AnymalDFlatEnvCfg,
@@ -288,7 +320,7 @@ def main():
             env_cfg = AnymalDFlatEnvCfg()
             agent_cfg = AnymalDFlatPPORunnerCfg()
         except Exception as e2:
-            print(f"[ERROR] Fallback also failed: {e2}")
+            log.error(f"Fallback also failed: {e2}")
             return
 
     # Set the environment seed
@@ -302,7 +334,7 @@ def main():
     log_root_path = os.path.join("logs", "rsl_rl_ppo", args_cli.task.replace("-", "_"))
     log_root_path = os.path.abspath(log_root_path)
     os.makedirs(log_root_path, exist_ok=True)
-    print(f"[INFO] Logging experiment in directory: {log_root_path}")
+    log.info(f"Logging to: {log_root_path}")
 
     # specify directory for logging runs
     log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -335,25 +367,24 @@ def main():
         )
 
     # Create the environment
-    print("[INFO] Creating environment...")
+    log.info("Creating environment...")
     try:
         from isaaclab.envs import ManagerBasedRLEnv
 
-        env = ManagerBasedRLEnv(cfg=env_cfg)
-        print(f"[INFO] Created raw environment: {type(env).__name__}")
-        # Wrap the environment for rsl_rl compatibility
+        env = ManagerBasedRLEnv(cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+        if args_cli.video:
+            video_dir = os.path.join(log_dir, "videos")
+            env = gym.wrappers.RecordVideo(
+                env,
+                video_folder=video_dir,
+                step_trigger=lambda step: step % args_cli.video_interval == 0,
+                video_length=args_cli.video_length,
+            )
+            log.info(f"RecordVideo wrapper enabled — saving to {video_dir} every {args_cli.video_interval} steps")
         env = RslRlVecEnvWrapper(env)
-        print(f"[INFO] Wrapped environment: {type(env).__name__}")
-        # Verify wrapper has get_observations method
-        if hasattr(env, "get_observations"):
-            print("[INFO] Wrapper has get_observations method: YES")
-        else:
-            print("[ERROR] Wrapper missing get_observations method!")
+        log.info(f"Environment ready: [bold]{type(env).__name__}[/bold]  obs={env.num_obs}  actions={env.num_actions}  envs={env.num_envs}")
     except Exception as e:
-        print(f"[ERROR] Failed to create environment: {e}")
-        import traceback
-
-        traceback.print_exc()
+        log.error(f"Failed to create environment: {e}", exc_info=True)
         return
 
     # Use the agent configuration from the registry
@@ -378,46 +409,61 @@ def main():
     elif isinstance(runner_cfg.get("algorithm"), dict):
         runner_cfg["algorithm"]["learning_rate"] = args_cli.learning_rate
 
-    # Verify environment is wrapped correctly
-    print(f"[INFO] Environment type before runner: {type(env).__name__}")
-    if hasattr(env, "get_observations"):
-        print("[INFO] Environment has get_observations: YES")
-    else:
-        print("[ERROR] Environment missing get_observations!")
+    if not hasattr(env, "get_observations"):
+        log.error("Environment wrapper is missing get_observations — cannot train")
         return
 
-    # Create RSL RL runner
+    log.info("Creating OnPolicyRunner...")
     runner = OnPolicyRunner(env, runner_cfg, log_dir, device=env_cfg.sim.device)
 
-    # Train the agent
     num_iterations = runner_cfg["max_iterations"]
-    video_interval = args_cli.video_interval_iters if args_cli.video else 0
-    print(
-        f"[INFO] Starting RSL RL PPO training for {args_cli.total_timesteps} timesteps ({num_iterations} iterations)..."
-    )
+    video_interval = args_cli.video_interval_iters if args_cli.video else num_iterations
+    chunk_size = video_interval  # also drives the progress bar granularity
 
-    if not args_cli.video or not wandb_logger:
-        # No video recording — run all at once
-        runner.learn(num_iterations)
-    else:
-        # Chunked training loop with periodic video uploads
-        uploaded_videos = set()
+    log.info(f"Starting training: {num_iterations} iterations ({args_cli.total_timesteps:,} timesteps)")
+
+    uploaded_videos = set()
+    start_time = datetime.now()
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        console=console,
+        refresh_per_second=4,
+    ) as progress:
+        task = progress.add_task("Training", total=num_iterations)
         iters_done = 0
         while iters_done < num_iterations:
-            chunk = min(video_interval, num_iterations - iters_done)
+            chunk = min(chunk_size, num_iterations - iters_done)
             runner.learn(chunk)
             iters_done += chunk
-            uploaded_videos = find_and_upload_latest_video(
-                log_dir, wandb_logger.run, step=iters_done, already_uploaded=uploaded_videos
-            )
-            print(f"[INFO] Completed {iters_done}/{num_iterations} iterations")
+            progress.update(task, advance=chunk)
+            if args_cli.video and wandb_logger:
+                uploaded_videos = find_and_upload_latest_video(
+                    os.path.join(log_dir, "videos"), step=iters_done, already_uploaded=uploaded_videos
+                )
 
-    # Log final metrics to wandb
+    elapsed = datetime.now() - start_time
+
+    # Final summary table
+    summary = Table(title="Training Complete", border_style="green")
+    summary.add_column("Metric", style="bold")
+    summary.add_column("Value", style="cyan")
+    summary.add_row("Task", args_cli.task)
+    summary.add_row("Iterations", str(num_iterations))
+    summary.add_row("Timesteps", f"{args_cli.total_timesteps:,}")
+    summary.add_row("Num envs", str(args_cli.num_envs))
+    summary.add_row("Elapsed", str(elapsed).split(".")[0])
+    summary.add_row("Log dir", log_dir)
+    console.print(summary)
+
     if wandb_logger:
         wandb_logger.log({"train/completed": True})
         wandb_logger.finish()
-
-    print("[INFO] Training completed!")
 
     # close the simulator
     env.close()
