@@ -272,6 +272,9 @@ image = (
         "numpy<2.0",
         "torch",
         "torchvision",
+        # Logging and experiment tracking
+        "wandb",
+        "tensorboard",
     )
     .run_function(setup_image, gpu="T4", timeout=3600)  # 1 hour timeout for build
 )
@@ -396,33 +399,69 @@ print('  Note: Full simulation requires running IsaacSim (see train_ant function
     gpu="T4",
     timeout=3600,
 )
-def train_ant():
-    """Train an ant using RL."""
+def train_ant(
+    wandb_project: str = "isaaclab-ant",
+    wandb_entity: str = None,
+    num_steps: int = 1000,
+    wandb_key: str = None,
+):
+    """Train an ant using RL with wandb logging.
+
+    Args:
+        wandb_project: Wandb project name
+        wandb_entity: Wandb entity/username (optional)
+        num_steps: Number of training steps
+        wandb_key: Wandb API key (optional - can also use WANDB_API_KEY env var)
+    """
     import subprocess
+    import os
 
     isaaclab_path = "/root/IsaacLab"
-    isaaclab_script = os.path.join(isaaclab_path, "isaaclab.sh")
+    isaacsim_path = "/root/isaacsim"
     train_script = os.path.join(
         isaaclab_path, "scripts/reinforcement_learning/rsl_rl/train.py"
     )
 
     print("Training ant...")
+    print(f"Wandb project: {wandb_project}")
+    if wandb_entity:
+        print(f"Wandb entity: {wandb_entity}")
+    print(f"Training steps: {num_steps}")
 
-    env = get_isaaclab_env()
+    # Set up environment
+    env = os.environ.copy()
+    if wandb_key:
+        env["WANDB_API_KEY"] = wandb_key
+        print("Using provided wandb API key")
+    elif "WANDB_API_KEY" in env:
+        print("Using WANDB_API_KEY from environment")
+    else:
+        print("Warning: No wandb API key found - logging may fail")
+
+    # Use the conda setup script to properly configure environment
+    setup_conda_script = os.path.join(isaacsim_path, "setup_conda_env.sh")
+
+    # Build training command with wandb logging
+    train_cmd = f"python {train_script} --task=Isaac-Ant-v0 --headless --max_iterations={num_steps}"
+
+    # Add wandb logging if configured
+    if wandb_project:
+        train_cmd += f" --logger=wandb --wandb_project={wandb_project}"
+        if wandb_entity:
+            train_cmd += f" --wandb_entity={wandb_entity}"
+
+    # Build full command with proper environment setup
+    cmd = f"""
+    source {setup_conda_script} && \
+    {train_cmd}
+    """
 
     result = subprocess.run(
-        [
-            "bash",
-            isaaclab_script,
-            "-p",
-            train_script,
-            "--task=Isaac-Ant-v0",
-            "--headless",
-        ],
+        ["bash", "-c", cmd],
         capture_output=True,
         text=True,
         cwd=isaaclab_path,
-        env={**os.environ, **env},
+        env=env,
     )
 
     print(

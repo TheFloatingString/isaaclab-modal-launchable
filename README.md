@@ -31,7 +31,11 @@ This project sets up IsaacLab and IsaacSim on Modal's serverless GPU infrastruct
 
 4. **Train an ant (example)**:
    ```bash
+   # Basic training
    modal run isaaclab_modal.py::train_ant
+   
+   # With wandb logging
+   modal run isaaclab_modal.py::train_ant --wandb-project my-project --wandb-entity my-username
    ```
 
 ## Available Commands
@@ -70,6 +74,25 @@ The following environment variables are set automatically:
 - `PYTHONPATH` - Includes IsaacSim and IsaacLab source paths
 - `DISPLAY=:0` - For headless rendering
 - `OMNI_KIT_ACCEPT_EULA=YES` - Accepts IsaacSim EULA automatically
+
+## Logging with Weights & Biases
+
+The setup includes `wandb` for experiment tracking. To use it:
+
+1. **Set up your wandb API key** (one-time):
+   ```bash
+   modal secret create wandb-api-key WANDB_API_KEY=your_api_key_here
+   ```
+
+2. **Run training with wandb**:
+   ```bash
+   modal run isaaclab_modal.py::train_ant \
+     --wandb-project isaaclab-experiments \
+     --wandb-entity your-username \
+     --num-steps 10000
+   ```
+
+3. **View results**: Check your wandb dashboard at https://wandb.ai
 
 ## Troubleshooting
 
